@@ -3,15 +3,9 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { setLogging, setLogFn, journal } from './utils.js'
 
-const Panel = Main.panel;
-const StatusArea = Panel.statusArea;
+const StatusArea = Main.panel.statusArea;
 
 export default class NotificationThemeExtension extends Extension {
-  constructor(metadata) {
-    super(metadata);
-    this._themeSignalId = null;
-  }
-
   enable() {
     setLogFn((msg, error = false) => {
       let level;
