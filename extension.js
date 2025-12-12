@@ -4,7 +4,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { setLogging, setLogFn, journal } from './utils.js'
 
 const Panel = Main.panel;
-const SessionModePanel = Main.sessionMode.panel;
 const StatusArea = Panel.statusArea;
 
 export default class NotificationThemeExtension extends Extension {
@@ -23,11 +22,11 @@ export default class NotificationThemeExtension extends Extension {
       }
 
       GLib.log_structured(
-        'fix-css-by-blueray453',
+        'fix-panel-order-by-blueray453',
         level,
         {
           MESSAGE: `${msg}`,
-          SYSLOG_IDENTIFIER: 'fix-css-by-blueray453',
+          SYSLOG_IDENTIFIER: 'fix-panel-order-by-blueray453',
           CODE_FILE: GLib.filename_from_uri(import.meta.url)[0]
         }
       );
@@ -38,7 +37,7 @@ export default class NotificationThemeExtension extends Extension {
     // Main.overview.dash.height = 0;
     // Main.overview.dash.hide();
 
-    // journalctl -f -o cat SYSLOG_IDENTIFIER=fix-css-by-blueray453
+    // journalctl -f -o cat SYSLOG_IDENTIFIER=fix-panel-order-by-blueray453
     journal(`Enabled`);
 
     // Hardcoded center box order
