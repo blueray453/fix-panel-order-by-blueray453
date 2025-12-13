@@ -1,7 +1,7 @@
 {
   "uuid": "fix-panel-order-by-blueray453",
   "name": "Fix Panel Order by blueray453",
-  "description": "GNOME Shell extension that fixes my CSS.",
+  "description": "GNOME Shell extension that fixes Panel Order.",
   "version": 1,
   "shell-version": [
     "48",
