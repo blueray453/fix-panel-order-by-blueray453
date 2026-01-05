@@ -113,10 +113,38 @@ export default class NotificationThemeExtension extends Extension {
     // journal(`=== ${boxType} box organization complete ===`);
   }
 
+  _getRolesInBox(box, boxName = '', log = true) {
+    const roles = [];
+
+    box.get_children().forEach((child, index) => {
+      let role = null;
+
+      for (const r in StatusArea) {
+        if (StatusArea[r].container === child) {
+          role = r;
+          break;
+        }
+      }
+
+      const roleName = role || 'unknown';
+      roles.push(roleName);
+
+      if (log) {
+        journal(`${boxName}[${index}]: ${roleName}`);
+      }
+    });
+
+    return roles;
+  }
+
   disable() {
     if (this._pollingTimeoutId) {
       GLib.Source.remove(this._pollingTimeoutId);
       this._pollingTimeoutId = null;
     }
+
+    // this._getRolesInBox(Panel._leftBox, 'LEFT BOX');
+    // this._getRolesInBox(Panel._centerBox, 'CENTER BOX');
+    // this._getRolesInBox(Panel._rightBox, 'RIGHT BOX');
   }
 }
