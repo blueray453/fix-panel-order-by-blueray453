@@ -3,6 +3,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { setLogging, setLogFn, journal } from './utils.js'
 
+const Panel = Main.panel;
 const StatusArea = Main.panel.statusArea;
 
 export default class NotificationThemeExtension extends Extension {
@@ -86,8 +87,7 @@ export default class NotificationThemeExtension extends Extension {
   }
 
   safelyReorder(boxType, desiredOrder) {
-    const panel = Main.panel;
-    const box = panel[`_${boxType}Box`];
+    const box = Panel[`_${boxType}Box`];
 
     if (!box) {
       log(`Box ${boxType} not found`);
@@ -96,7 +96,7 @@ export default class NotificationThemeExtension extends Extension {
 
     // Walk the desired order and reposition existing indicators
     desiredOrder.forEach((role, index) => {
-      const indicator = panel.statusArea[role];
+      const indicator = Panel.statusArea[role];
       if (!indicator || !indicator.container)
         return; // Skip missing ones
 
@@ -138,13 +138,14 @@ export default class NotificationThemeExtension extends Extension {
   }
 
   disable() {
+    journal(`Disable`);
     if (this._pollingTimeoutId) {
       GLib.Source.remove(this._pollingTimeoutId);
       this._pollingTimeoutId = null;
     }
 
-    // this._getRolesInBox(Panel._leftBox, 'LEFT BOX');
-    // this._getRolesInBox(Panel._centerBox, 'CENTER BOX');
-    // this._getRolesInBox(Panel._rightBox, 'RIGHT BOX');
+    this._getRolesInBox(Panel._leftBox, 'LEFT BOX');
+    this._getRolesInBox(Panel._centerBox, 'CENTER BOX');
+    this._getRolesInBox(Panel._rightBox, 'RIGHT BOX');
   }
 }
