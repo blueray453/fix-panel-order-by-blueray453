@@ -35,6 +35,11 @@ export default class NotificationThemeExtension extends Extension {
     // journalctl -f -o cat SYSLOG_IDENTIFIER=fix-panel-order-by-blueray453
     journal(`Enabled`);
 
+    const LEFT_ORDER = [
+      "window-list-menu",
+      "workspace-indicator"
+    ];
+
     // Hardcoded center box order
     const CENTER_ORDER = [
     ];
@@ -50,7 +55,7 @@ export default class NotificationThemeExtension extends Extension {
 
     let attempts = 0;
 
-    let ALL_ORDER = [...CENTER_ORDER, ...RIGHT_ORDER];
+    let ALL_ORDER = [...LEFT_ORDER,...CENTER_ORDER, ...RIGHT_ORDER];
     // Start polling every 100ms
     this._pollingTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
       attempts++;
@@ -70,6 +75,7 @@ export default class NotificationThemeExtension extends Extension {
         // journal("All center and right roles found — panel ready!");
 
         // Run your organization logic now
+        this.safelyReorder('left', LEFT_ORDER);
         this.safelyReorder('center', CENTER_ORDER);
         this.safelyReorder('right', RIGHT_ORDER);
 
