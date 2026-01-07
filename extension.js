@@ -50,6 +50,7 @@ export default class NotificationThemeExtension extends Extension {
       "lockkeys@febueldo.test",
       "color-picker@tuberry",
       "clipboardIndicator",
+      "emoji-copy@felipeftn",
       "athan@goodm4ven"
     ];
 
