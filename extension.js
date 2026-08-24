@@ -36,7 +36,6 @@ export default class NotificationThemeExtension extends Extension {
     journal(`Enabled`);
 
     const LEFT_ORDER = [
-      "window-list-menu",
       "workspace-indicator"
     ];
 
