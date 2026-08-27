@@ -5,26 +5,54 @@ import Gtk from 'gi://Gtk';
 import Adw from 'gi://Adw';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-// Gtk.FileDialog's save()/open() are async-callback style in the GI
-// binding; promisify so we can await them below.
-Gio._promisify(Gtk.FileDialog.prototype, 'save', 'save_finish');
-Gio._promisify(Gtk.FileDialog.prototype, 'open', 'open_finish');
-
 const BOXES = [
     { type: 'left', title: 'Left Box', orderKey: 'order-left', discoveredKey: 'discovered-left' },
     { type: 'center', title: 'Center Box', orderKey: 'order-center', discoveredKey: 'discovered-center' },
     { type: 'right', title: 'Right Box', orderKey: 'order-right', discoveredKey: 'discovered-right' },
 ];
 
+// Module-level, single-process state: which row is currently being
+// dragged, set on drag-begin and cleared on drag-end. Every row's
+// Gtk.DropTarget reads this during 'motion' to decide, synchronously,
+// whether it belongs to the same box as the drag source — GTK's own
+// value-based drop payload isn't available until 'drop' fires, but we
+// need same-box awareness *during* the drag to draw (or withhold) the
+// insertion-line indicator and show the correct pointer cursor.
+let currentDrag = null; // { boxType, role, sourceList }
+
+function loadCss() {
+    const provider = new Gtk.CssProvider();
+    provider.load_from_string(`
+    row.drop-before {
+      box-shadow: inset 0 2px 0 0 @accent_color;
+    }
+    row.drop-after {
+      box-shadow: inset 0 -2px 0 0 @accent_color;
+    }
+    row.dragging {
+      opacity: 0.4;
+    }
+  `);
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(),
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    );
+}
+
 // ==================== REORDERABLE ROLE LIST ====================
 // One drag-reorderable Gtk.ListBox bound to one box's order-*/discovered-*
-// GSettings keys. Every drop writes the full new order straight back to
-// order-* — the running extension picks that up live via dconf.
+// GSettings keys. Drops are scoped to their own box two ways: the JSON
+// payload is checked at 'drop' (belt), and the currentDrag boxType is
+// checked at 'motion' so the wrong-box case never even shows an
+// insertion indicator or accepts the drag visually (suspenders).
 class ReorderableRoleList {
-    constructor(settings, orderKey, discoveredKey) {
+    constructor(settings, boxType, orderKey, discoveredKey) {
         this._settings = settings;
+        this._boxType = boxType;
         this._orderKey = orderKey;
         this._discoveredKey = discoveredKey;
+        this._highlightedRow = null;
 
         this.widget = new Gtk.ListBox({
             selection_mode: Gtk.SelectionMode.NONE,
@@ -44,17 +72,10 @@ class ReorderableRoleList {
         }
     }
 
-    // Public: called after an import, or any time the caller wants the
-    // widget to reflect whatever is currently in GSettings.
     refresh() {
         this._rebuild(this._effectiveOrder());
     }
 
-    // order-* entries first (in the person's saved order), then any
-    // discovered role not yet listed, appended at the end. This becomes
-    // both what's shown AND what's saved — so simply opening prefs for
-    // the first time captures every indicator currently in the box, not
-    // just the ones this extension originally hardcoded.
     _effectiveOrder() {
         const order = this._settings.get_strv(this._orderKey);
         const discovered = this._settings.get_strv(this._discoveredKey);
@@ -77,44 +98,116 @@ class ReorderableRoleList {
             this.widget.remove(child);
             child = next;
         }
+        this._highlightedRow = null;
 
         if (roles.length === 0) {
             const empty = new Adw.ActionRow({ title: 'No indicators found here', sensitive: false });
             this.widget.append(empty);
         } else {
-            roles.forEach(role => this._addRow(role));
+            const discovered = new Set(this._settings.get_strv(this._discoveredKey));
+            roles.forEach(role => this._addRow(role, discovered.has(role)));
         }
 
-        // Keep order-* in sync with whatever's actually displayed —
-        // guarantees "current indicators" (including ones never explicitly
-        // saved before) survive a shell restart in their current position.
         this._persist(roles);
     }
 
-    _addRow(role) {
+    _clearHighlight() {
+        if (this._highlightedRow) {
+            this._highlightedRow.remove_css_class('drop-before');
+            this._highlightedRow.remove_css_class('drop-after');
+            this._highlightedRow = null;
+        }
+    }
+
+    _setHighlight(row, before) {
+        if (this._highlightedRow && this._highlightedRow !== row)
+            this._clearHighlight();
+        row.remove_css_class(before ? 'drop-after' : 'drop-before');
+        row.add_css_class(before ? 'drop-before' : 'drop-after');
+        this._highlightedRow = row;
+    }
+
+    _addRow(role, isPresent) {
         const row = new Adw.ActionRow({ title: role });
         row._role = role;
         row.add_prefix(new Gtk.Image({ icon_name: 'list-drag-handle-symbolic' }));
 
+        if (!isPresent) {
+            row.set_subtitle('Not currently active');
+            row.add_css_class('dim-label');
+        }
+
+        // ---- Drag source ----
         const dragSource = new Gtk.DragSource({ actions: Gdk.DragAction.MOVE });
         dragSource.connect('prepare', () => {
+            const payload = JSON.stringify({ boxType: this._boxType, role: row._role });
             const value = new GObject.Value();
             value.init(GObject.TYPE_STRING);
-            value.set_string(row._role);
+            value.set_string(payload);
             return Gdk.ContentProvider.new_for_value(value);
         });
-        dragSource.connect('drag-begin', () => row.add_css_class('dragging'));
-        dragSource.connect('drag-end', () => row.remove_css_class('dragging'));
+        dragSource.connect('drag-begin', (source, drag) => {
+            currentDrag = { boxType: this._boxType, role: row._role, sourceList: this };
+            row.add_css_class('dragging');
+
+            // Row itself, semi-transparent, follows the pointer — makes it
+            // unambiguous which indicator is actually being moved.
+            const paintable = new Gtk.WidgetPaintable({ widget: row });
+            source.set_icon(paintable, row.get_width() / 2, row.get_height() / 2);
+        });
+        dragSource.connect('drag-end', () => {
+            row.remove_css_class('dragging');
+            currentDrag = null;
+            this._clearHighlight();
+        });
         row.add_controller(dragSource);
 
+        // ---- Drop target ----
         const dropTarget = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE);
-        dropTarget.connect('drop', (target, draggedRole, x, y) => {
-            if (draggedRole === row._role)
+
+        dropTarget.connect('motion', (target, x, y) => {
+            // Wrong box (or no drag in progress, e.g. a drag from outside
+            // this prefs window entirely) — no indicator, reject visually.
+            if (!currentDrag || currentDrag.boxType !== this._boxType) {
+                this._clearHighlight();
+                return 0; // Gdk.DragAction none -> "no drop" cursor here
+            }
+            if (currentDrag.role === row._role) {
+                this._clearHighlight();
+                return 0;
+            }
+
+            const before = y < row.get_allocated_height() / 2;
+            this._setHighlight(row, before);
+            return Gdk.DragAction.MOVE;
+        });
+
+        dropTarget.connect('leave', () => {
+            if (this._highlightedRow === row)
+                this._clearHighlight();
+        });
+
+        dropTarget.connect('drop', (target, payloadStr, x, y) => {
+            this._clearHighlight();
+
+            let payload;
+            try {
+                payload = JSON.parse(payloadStr);
+            } catch (e) {
                 return false;
+            }
+            if (!payload || typeof payload.role !== 'string' || typeof payload.boxType !== 'string')
+                return false;
+            if (payload.boxType !== this._boxType)
+                return false;
+            if (payload.role === row._role)
+                return false;
+
             const insertAfter = y > row.get_allocated_height() / 2;
-            this._moveRole(draggedRole, row._role, insertAfter);
+            this._moveRole(payload.role, row._role, insertAfter);
             return true;
         });
+
         row.add_controller(dropTarget);
 
         this.widget.append(row);
@@ -131,21 +224,22 @@ class ReorderableRoleList {
         this._rebuild(order);
     }
 
-    // A new indicator appeared (or one vanished) while prefs is open.
-    // Only append genuinely new roles — don't disturb the person's
-    // current row order/scroll position for something that isn't new.
     _mergeNewlyDiscovered() {
         const discovered = this._settings.get_strv(this._discoveredKey);
         const order = this._settings.get_strv(this._orderKey);
         const newRoles = discovered.filter(r => !order.includes(r));
-        if (newRoles.length === 0)
+        if (newRoles.length === 0) {
+            this._rebuild(this._effectiveOrder());
             return;
+        }
         this._rebuild([...order, ...newRoles]);
     }
 }
 
 export default class FixPanelOrderPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
+        loadCss();
+
         const settings = this.getSettings();
         this._lists = [];
 
@@ -156,13 +250,13 @@ export default class FixPanelOrderPreferences extends ExtensionPreferences {
         window.add(page);
 
         const introGroup = new Adw.PreferencesGroup({
-            description: 'Drag indicators to reorder them within a box. Changes apply to the panel immediately.',
+            description: 'Drag indicators to reorder them within a box. Indicators can\'t be dragged between boxes. Changes apply to the panel immediately.',
         });
         page.add(introGroup);
 
         for (const { type, title, orderKey, discoveredKey } of BOXES) {
             const group = new Adw.PreferencesGroup({ title });
-            const list = new ReorderableRoleList(settings, orderKey, discoveredKey);
+            const list = new ReorderableRoleList(settings, type, orderKey, discoveredKey);
             this._lists.push(list);
             group.add(list.widget);
             page.add(group);
@@ -191,58 +285,83 @@ export default class FixPanelOrderPreferences extends ExtensionPreferences {
             for (const list of this._lists)
                 list.destroy();
             this._lists = [];
+            currentDrag = null;
             return false;
         });
     }
 
-    async _onExportClicked(window, settings) {
-        const dialog = new Gtk.FileDialog({
+    _onExportClicked(window, settings) {
+        const dialog = new Gtk.FileChooserNative({
             title: 'Export Panel Order',
-            initial_name: 'panel-order.json',
+            transient_for: window,
+            action: Gtk.FileChooserAction.SAVE,
+            accept_label: '_Save',
+            cancel_label: '_Cancel',
         });
-        try {
-            const file = await dialog.save(window, null);
-            const data = {
-                left: settings.get_strv('order-left'),
-                center: settings.get_strv('order-center'),
-                right: settings.get_strv('order-right'),
-            };
-            const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
-            file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-        } catch (e) {
-            if (e.matches && e.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
-                return; // person just closed the dialog — not an error
-            this._showErrorDialog(window, `Export failed: ${e.message}`);
-        }
+        dialog.set_current_name('panel-order.json');
+
+        const filter = new Gtk.FileFilter();
+        filter.set_name('JSON files');
+        filter.add_pattern('*.json');
+        dialog.add_filter(filter);
+
+        dialog.connect('response', (self, id) => {
+            if (id === Gtk.ResponseType.ACCEPT) {
+                try {
+                    const file = dialog.get_file();
+                    const data = {
+                        left: settings.get_strv('order-left'),
+                        center: settings.get_strv('order-center'),
+                        right: settings.get_strv('order-right'),
+                    };
+                    const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
+                    file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                } catch (e) {
+                    this._showErrorDialog(window, `Export failed: ${e.message}`);
+                }
+            }
+            dialog.destroy();
+        });
+        dialog.show();
     }
 
-    async _onImportClicked(window, settings) {
-        const dialog = new Gtk.FileDialog({ title: 'Import Panel Order' });
-        const filter = new Gtk.FileFilter({ name: 'JSON files' });
+    _onImportClicked(window, settings) {
+        const dialog = new Gtk.FileChooserNative({
+            title: 'Import Panel Order',
+            transient_for: window,
+            action: Gtk.FileChooserAction.OPEN,
+            accept_label: '_Open',
+            cancel_label: '_Cancel',
+        });
+
+        const filter = new Gtk.FileFilter();
+        filter.set_name('JSON files');
         filter.add_pattern('*.json');
-        const filters = new Gio.ListStore({ item_type: Gtk.FileFilter.$gtype });
-        filters.append(filter);
-        dialog.set_filters(filters);
+        dialog.add_filter(filter);
 
-        try {
-            const file = await dialog.open(window, null);
-            const [, contents] = file.load_contents(null);
-            const data = JSON.parse(new TextDecoder().decode(contents));
+        dialog.connect('response', (self, id) => {
+            if (id === Gtk.ResponseType.ACCEPT) {
+                try {
+                    const file = dialog.get_file();
+                    const [, contents] = file.load_contents(null);
+                    const data = JSON.parse(new TextDecoder().decode(contents));
 
-            if (!Array.isArray(data.left) || !Array.isArray(data.center) || !Array.isArray(data.right))
-                throw new Error('Expected a JSON object with "left", "center", "right" arrays');
+                    if (!Array.isArray(data.left) || !Array.isArray(data.center) || !Array.isArray(data.right))
+                        throw new Error('Expected a JSON object with "left", "center", "right" arrays');
 
-            settings.set_strv('order-left', data.left);
-            settings.set_strv('order-center', data.center);
-            settings.set_strv('order-right', data.right);
+                    settings.set_strv('order-left', data.left);
+                    settings.set_strv('order-center', data.center);
+                    settings.set_strv('order-right', data.right);
 
-            for (const list of this._lists)
-                list.refresh();
-        } catch (e) {
-            if (e.matches && e.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
-                return;
-            this._showErrorDialog(window, `Import failed: ${e.message}`);
-        }
+                    for (const list of this._lists)
+                        list.refresh();
+                } catch (e) {
+                    this._showErrorDialog(window, `Import failed: ${e.message}`);
+                }
+            }
+            dialog.destroy();
+        });
+        dialog.show();
     }
 
     _showErrorDialog(window, message) {

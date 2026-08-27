@@ -85,32 +85,48 @@ export default class FixPanelOrderExtension extends Extension {
 
   safelyReorder(box, desiredOrder) {
     desiredOrder.forEach((role, index) => {
-      const indicator = Panel.statusArea[role];
-      if (!indicator || !indicator.container)
-        return; // Skip missing ones
-
-      const actor = indicator.container;
-      if (actor.get_parent() === box)
-        box.set_child_at_index(actor, index);
+      try {
+        const indicator = Panel.statusArea[role];
+        if (!indicator || !indicator.container)
+          return;
+        const actor = indicator.container;
+        if (actor.get_parent() === box)
+          box.set_child_at_index(actor, index);
+      } catch (e) {
+        // Indicator's actor may have been disposed between the null-check
+        // above and here (e.g. its extension was disabled mid-reorder).
+        // Skip it — one broken role shouldn't stop the rest from applying.
+        journal(`safelyReorder: skipping role "${role}": ${e.message}`);
+      }
     });
   }
 
-  // ---- Discovery ----
-  // prefs.js runs in a separate process with no access to Main.panel,
-  // so it can't introspect the live panel itself. These methods are how
-  // it learns what's actually there.
   _getRolesInBox(box) {
     const roles = [];
-    box.get_children().forEach(child => {
+    let children;
+    try {
+      children = box.get_children();
+    } catch (e) {
+      journal(`_getRolesInBox: box unavailable: ${e.message}`);
+      return roles;
+    }
+
+    children.forEach(child => {
       let role = null;
-      for (const r in StatusArea) {
-        if (StatusArea[r].container === child) {
-          role = r;
-          break;
+      try {
+        for (const r in StatusArea) {
+          if (StatusArea[r] && StatusArea[r].container === child) {
+            role = r;
+            break;
+          }
         }
+      } catch (e) {
+        // A StatusArea entry mid-teardown can throw on property access —
+        // treat it the same as "couldn't identify this child".
       }
       roles.push(role || 'unknown');
     });
+
     return roles;
   }
 
