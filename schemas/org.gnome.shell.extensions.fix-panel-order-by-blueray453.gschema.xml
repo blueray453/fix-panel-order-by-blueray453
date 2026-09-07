@@ -15,7 +15,7 @@
       <summary>Desired order of indicators in the center panel box</summary>
     </key>
     <key name="order-right" type="as">
-      <default>['ShowNetSpeedButton', 'printers', 'lockkeys@febueldo.test', 'color-picker@tuberry', 'clipboardIndicator', 'emoji-copy@felipeftn', 'athan@goodm4ven']</default>
+      <default>['ShowNetSpeedButton', 'focused-window-manager-by-blueray453','printers', 'lockkeys@febueldo.test', 'color-picker@tuberry', 'clipboardIndicator', 'emoji-copy@felipeftn', 'athan@goodm4ven']</default>
       <summary>Desired order of indicators in the right panel box</summary>
     </key>
 
