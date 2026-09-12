@@ -11,14 +11,33 @@ const BOXES = [
     { type: 'right', title: 'Right Box', orderKey: 'order-right', discoveredKey: 'discovered-right' },
 ];
 
-// Module-level, single-process state: which row is currently being
-// dragged, set on drag-begin and cleared on drag-end. Every row's
-// Gtk.DropTarget reads this during 'motion' to decide, synchronously,
-// whether it belongs to the same box as the drag source — GTK's own
-// value-based drop payload isn't available until 'drop' fires, but we
-// need same-box awareness *during* the drag to draw (or withhold) the
-// insertion-line indicator and show the correct pointer cursor.
-let currentDrag = null; // { boxType, role, sourceList }
+// ---------------------------------------------------------------------------
+// Module state.
+//
+// The prefs window can be built more than once per process (open, close,
+// reopen), so this is reset at the start of every fillPreferencesWindow().
+// ---------------------------------------------------------------------------
+const state = {
+    settings: null,
+    lists: [],           // ReorderableRoleList instances, one per box
+    // Set on drag-begin, cleared on drag-end. Every row's Gtk.DropTarget
+    // reads this during 'motion' to decide, synchronously, whether it
+    // belongs to the same box as the drag source — GTK's own value-based
+    // drop payload isn't available until 'drop' fires, but we need same-box
+    // awareness *during* the drag to draw (or withhold) the insertion-line
+    // indicator and show the correct pointer cursor.
+    currentDrag: null,   // { boxType, role, sourceList }
+};
+
+function resetState(settings) {
+    state.settings = settings;
+    state.lists = [];
+    state.currentDrag = null;
+}
+
+// ---------------------------------------------------------------------------
+// CSS.
+// ---------------------------------------------------------------------------
 
 function loadCss() {
     const provider = new Gtk.CssProvider();
@@ -44,8 +63,13 @@ function loadCss() {
 // One drag-reorderable Gtk.ListBox bound to one box's order-*/discovered-*
 // GSettings keys. Drops are scoped to their own box two ways: the JSON
 // payload is checked at 'drop' (belt), and the currentDrag boxType is
-// checked at 'motion' so the wrong-box case never even shows an
-// insertion indicator or accepts the drag visually (suspenders).
+// checked at 'motion' so the wrong-box case never even shows an insertion
+// indicator or accepts the drag visually (suspenders).
+//
+// This stays a class: it has real per-instance lifecycle (multiple lists
+// coexist, one per box), owns a GSettings signal that needs disconnecting,
+// and is tightly bound to the Gtk.ListBox widget it creates. This is the
+// "OOP strictly needed" case.
 class ReorderableRoleList {
     constructor(settings, boxType, orderKey, discoveredKey) {
         this._settings = settings;
@@ -147,7 +171,7 @@ class ReorderableRoleList {
             return Gdk.ContentProvider.new_for_value(value);
         });
         dragSource.connect('drag-begin', (source, drag) => {
-            currentDrag = { boxType: this._boxType, role: row._role, sourceList: this };
+            state.currentDrag = { boxType: this._boxType, role: row._role, sourceList: this };
             row.add_css_class('dragging');
 
             // Row itself, semi-transparent, follows the pointer — makes it
@@ -157,7 +181,7 @@ class ReorderableRoleList {
         });
         dragSource.connect('drag-end', () => {
             row.remove_css_class('dragging');
-            currentDrag = null;
+            state.currentDrag = null;
             this._clearHighlight();
         });
         row.add_controller(dragSource);
@@ -168,11 +192,11 @@ class ReorderableRoleList {
         dropTarget.connect('motion', (target, x, y) => {
             // Wrong box (or no drag in progress, e.g. a drag from outside
             // this prefs window entirely) — no indicator, reject visually.
-            if (!currentDrag || currentDrag.boxType !== this._boxType) {
+            if (!state.currentDrag || state.currentDrag.boxType !== this._boxType) {
                 this._clearHighlight();
                 return 0; // Gdk.DragAction none -> "no drop" cursor here
             }
-            if (currentDrag.role === row._role) {
+            if (state.currentDrag.role === row._role) {
                 this._clearHighlight();
                 return 0;
             }
@@ -236,140 +260,157 @@ class ReorderableRoleList {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Import / export.
+// ---------------------------------------------------------------------------
+
+function onExportClicked(window) {
+    const dialog = new Gtk.FileChooserNative({
+        title: 'Export Panel Order',
+        transient_for: window,
+        action: Gtk.FileChooserAction.SAVE,
+        accept_label: '_Save',
+        cancel_label: '_Cancel',
+    });
+    dialog.set_current_name('panel-order.json');
+
+    const filter = new Gtk.FileFilter();
+    filter.set_name('JSON files');
+    filter.add_pattern('*.json');
+    dialog.add_filter(filter);
+
+    dialog.connect('response', (self, id) => {
+        if (id === Gtk.ResponseType.ACCEPT) {
+            try {
+                const file = dialog.get_file();
+                const data = {
+                    left: state.settings.get_strv('order-left'),
+                    center: state.settings.get_strv('order-center'),
+                    right: state.settings.get_strv('order-right'),
+                };
+                const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
+                file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            } catch (e) {
+                showErrorDialog(window, `Export failed: ${e.message}`);
+            }
+        }
+        dialog.destroy();
+    });
+    dialog.show();
+}
+
+function onImportClicked(window) {
+    const dialog = new Gtk.FileChooserNative({
+        title: 'Import Panel Order',
+        transient_for: window,
+        action: Gtk.FileChooserAction.OPEN,
+        accept_label: '_Open',
+        cancel_label: '_Cancel',
+    });
+
+    const filter = new Gtk.FileFilter();
+    filter.set_name('JSON files');
+    filter.add_pattern('*.json');
+    dialog.add_filter(filter);
+
+    dialog.connect('response', (self, id) => {
+        if (id === Gtk.ResponseType.ACCEPT) {
+            try {
+                const file = dialog.get_file();
+                const [, contents] = file.load_contents(null);
+                const data = JSON.parse(new TextDecoder().decode(contents));
+
+                if (!Array.isArray(data.left) || !Array.isArray(data.center) || !Array.isArray(data.right))
+                    throw new Error('Expected a JSON object with "left", "center", "right" arrays');
+
+                state.settings.set_strv('order-left', data.left);
+                state.settings.set_strv('order-center', data.center);
+                state.settings.set_strv('order-right', data.right);
+
+                for (const list of state.lists)
+                    list.refresh();
+            } catch (e) {
+                showErrorDialog(window, `Import failed: ${e.message}`);
+            }
+        }
+        dialog.destroy();
+    });
+    dialog.show();
+}
+
+function showErrorDialog(window, message) {
+    const dialog = new Adw.AlertDialog({
+        heading: 'Panel Order',
+        body: message,
+    });
+    dialog.add_response('ok', 'OK');
+    dialog.present(window);
+}
+
+// ---------------------------------------------------------------------------
+// Page construction.
+// ---------------------------------------------------------------------------
+
+function buildPage(window) {
+    const page = new Adw.PreferencesPage({
+        title: 'Panel Order',
+        icon_name: 'view-list-symbolic',
+    });
+    window.add(page);
+
+    const introGroup = new Adw.PreferencesGroup({
+        description: 'Drag indicators to reorder them within a box. Indicators can\'t be dragged between boxes. Changes apply to the panel immediately.',
+    });
+    page.add(introGroup);
+
+    for (const { type, title, orderKey, discoveredKey } of BOXES) {
+        const group = new Adw.PreferencesGroup({ title });
+        const list = new ReorderableRoleList(state.settings, type, orderKey, discoveredKey);
+        state.lists.push(list);
+        group.add(list.widget);
+        page.add(group);
+    }
+
+    // ---- Import / Export ----
+    const ioGroup = new Adw.PreferencesGroup({
+        title: 'Backup',
+        description: 'Save or load the order of all three boxes as a JSON file',
+    });
+    page.add(ioGroup);
+
+    const ioRow = new Adw.ActionRow({ title: 'Panel order file' });
+
+    const exportBtn = new Gtk.Button({ label: 'Export…', valign: Gtk.Align.CENTER });
+    exportBtn.connect('clicked', () => onExportClicked(window));
+    ioRow.add_suffix(exportBtn);
+
+    const importBtn = new Gtk.Button({ label: 'Import…', valign: Gtk.Align.CENTER });
+    importBtn.connect('clicked', () => onImportClicked(window));
+    ioRow.add_suffix(importBtn);
+
+    ioGroup.add(ioRow);
+
+    window.connect('close-request', () => {
+        for (const list of state.lists)
+            list.destroy();
+        state.lists = [];
+        state.currentDrag = null;
+        return false;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Preferences entry point.
+//
+// This class exists only because GNOME Shell requires an ExtensionPreferences
+// subclass and because getSettings() is only reachable from it. All the real
+// work is done by the module-level functions above.
+// ---------------------------------------------------------------------------
+
 export default class FixPanelOrderPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         loadCss();
-
-        const settings = this.getSettings();
-        this._lists = [];
-
-        const page = new Adw.PreferencesPage({
-            title: 'Panel Order',
-            icon_name: 'view-list-symbolic',
-        });
-        window.add(page);
-
-        const introGroup = new Adw.PreferencesGroup({
-            description: 'Drag indicators to reorder them within a box. Indicators can\'t be dragged between boxes. Changes apply to the panel immediately.',
-        });
-        page.add(introGroup);
-
-        for (const { type, title, orderKey, discoveredKey } of BOXES) {
-            const group = new Adw.PreferencesGroup({ title });
-            const list = new ReorderableRoleList(settings, type, orderKey, discoveredKey);
-            this._lists.push(list);
-            group.add(list.widget);
-            page.add(group);
-        }
-
-        // ---- Import / Export ----
-        const ioGroup = new Adw.PreferencesGroup({
-            title: 'Backup',
-            description: 'Save or load the order of all three boxes as a JSON file',
-        });
-        page.add(ioGroup);
-
-        const ioRow = new Adw.ActionRow({ title: 'Panel order file' });
-
-        const exportBtn = new Gtk.Button({ label: 'Export…', valign: Gtk.Align.CENTER });
-        exportBtn.connect('clicked', () => this._onExportClicked(window, settings));
-        ioRow.add_suffix(exportBtn);
-
-        const importBtn = new Gtk.Button({ label: 'Import…', valign: Gtk.Align.CENTER });
-        importBtn.connect('clicked', () => this._onImportClicked(window, settings));
-        ioRow.add_suffix(importBtn);
-
-        ioGroup.add(ioRow);
-
-        window.connect('close-request', () => {
-            for (const list of this._lists)
-                list.destroy();
-            this._lists = [];
-            currentDrag = null;
-            return false;
-        });
-    }
-
-    _onExportClicked(window, settings) {
-        const dialog = new Gtk.FileChooserNative({
-            title: 'Export Panel Order',
-            transient_for: window,
-            action: Gtk.FileChooserAction.SAVE,
-            accept_label: '_Save',
-            cancel_label: '_Cancel',
-        });
-        dialog.set_current_name('panel-order.json');
-
-        const filter = new Gtk.FileFilter();
-        filter.set_name('JSON files');
-        filter.add_pattern('*.json');
-        dialog.add_filter(filter);
-
-        dialog.connect('response', (self, id) => {
-            if (id === Gtk.ResponseType.ACCEPT) {
-                try {
-                    const file = dialog.get_file();
-                    const data = {
-                        left: settings.get_strv('order-left'),
-                        center: settings.get_strv('order-center'),
-                        right: settings.get_strv('order-right'),
-                    };
-                    const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
-                    file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-                } catch (e) {
-                    this._showErrorDialog(window, `Export failed: ${e.message}`);
-                }
-            }
-            dialog.destroy();
-        });
-        dialog.show();
-    }
-
-    _onImportClicked(window, settings) {
-        const dialog = new Gtk.FileChooserNative({
-            title: 'Import Panel Order',
-            transient_for: window,
-            action: Gtk.FileChooserAction.OPEN,
-            accept_label: '_Open',
-            cancel_label: '_Cancel',
-        });
-
-        const filter = new Gtk.FileFilter();
-        filter.set_name('JSON files');
-        filter.add_pattern('*.json');
-        dialog.add_filter(filter);
-
-        dialog.connect('response', (self, id) => {
-            if (id === Gtk.ResponseType.ACCEPT) {
-                try {
-                    const file = dialog.get_file();
-                    const [, contents] = file.load_contents(null);
-                    const data = JSON.parse(new TextDecoder().decode(contents));
-
-                    if (!Array.isArray(data.left) || !Array.isArray(data.center) || !Array.isArray(data.right))
-                        throw new Error('Expected a JSON object with "left", "center", "right" arrays');
-
-                    settings.set_strv('order-left', data.left);
-                    settings.set_strv('order-center', data.center);
-                    settings.set_strv('order-right', data.right);
-
-                    for (const list of this._lists)
-                        list.refresh();
-                } catch (e) {
-                    this._showErrorDialog(window, `Import failed: ${e.message}`);
-                }
-            }
-            dialog.destroy();
-        });
-        dialog.show();
-    }
-
-    _showErrorDialog(window, message) {
-        const dialog = new Adw.AlertDialog({
-            heading: 'Panel Order',
-            body: message,
-        });
-        dialog.add_response('ok', 'OK');
-        dialog.present(window);
+        resetState(this.getSettings());
+        buildPage(window);
     }
 }
