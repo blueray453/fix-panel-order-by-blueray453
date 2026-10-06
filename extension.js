@@ -52,8 +52,8 @@ function applyOrder(boxType) {
 }
 
 function safelyReorder(box, desiredOrder) {
-  // Only roles that are actually placed advance the index. Skipped
-  // (dead / wrong-box) roles must not leave gaps.
+  // Only roles that are actually placed advance the index, so skipped
+  // (dead / wrong-box) roles leave no gaps.
   let index = 0;
   for (const role of desiredOrder) {
     try {
@@ -94,8 +94,8 @@ function getRolesInBox(box) {
     } catch (e) {
       // A StatusArea entry mid-teardown can throw; treat as unidentified.
     }
-    // Children that aren't statusArea indicators (spacers, etc.) are
-    // not reorderable by role, so don't publish them.
+    // Children that aren't statusArea indicators (spacers, etc.) can't be
+    // reordered by role, so they are not published.
     if (role && !roles.includes(role))
       roles.push(role);
   }
@@ -123,13 +123,20 @@ function discoverAndPublish(boxType) {
 
 // ---------------------------------------------------------------------------
 // Child watchers.
+//
+// set_child_at_index() repositions existing children and does NOT fire
+// child-added / child-removed, so re-applying the order from inside
+// child-added cannot loop.
 // ---------------------------------------------------------------------------
 
 function connectChildWatchers() {
   for (const [boxType, keys] of Object.entries(BOX_KEYS)) {
     const box = Panel[keys.box];
     if (!box) continue;
-    const addedId = box.connect('child-added', () => discoverAndPublish(boxType));
+    const addedId = box.connect('child-added', () => {
+      applyOrder(boxType);
+      discoverAndPublish(boxType);
+    });
     const removedId = box.connect('child-removed', () => discoverAndPublish(boxType));
     state.childSignalIds.push({ box, addedId, removedId });
   }
@@ -148,9 +155,8 @@ function disconnectChildWatchers() {
 // ---------------------------------------------------------------------------
 
 function setup() {
-  // Clear any stale snapshot left over from a previous session or crash,
-  // so prefs never shows roles that aren't there. Fresh data is published
-  // once the panel settles.
+  // Clear any stale snapshot from a previous session or crash. Fresh data is
+  // published once the panel settles.
   for (const keys of Object.values(BOX_KEYS)) {
     if (state.settings.get_strv(keys.discovered).length > 0)
       state.settings.set_strv(keys.discovered, []);
