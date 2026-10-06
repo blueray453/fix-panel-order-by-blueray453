@@ -15,6 +15,10 @@ const BOX_KEYS = {
   right: { box: '_rightBox', order: 'order-right', discovered: 'discovered-right' },
 };
 
+// Delay before re-applying the order after a child is added, so we run
+// after the other extension has finished positioning its own actor.
+const APPLY_DELAY_MS = 100;
+
 // ---------------------------------------------------------------------------
 // Module state.
 // ---------------------------------------------------------------------------
@@ -23,6 +27,7 @@ const state = {
   settingsChangeIds: [],
   childSignalIds: [],    // [{ box, addedId, removedId }]
   pollingTimeoutId: 0,
+  applyIds: { left: 0, center: 0, right: 0 },
 };
 
 function resetState() {
@@ -30,6 +35,7 @@ function resetState() {
   state.settingsChangeIds = [];
   state.childSignalIds = [];
   state.pollingTimeoutId = 0;
+  state.applyIds = { left: 0, center: 0, right: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +59,7 @@ function applyOrder(boxType) {
 
 function safelyReorder(box, desiredOrder) {
   // Only roles that are actually placed advance the index, so skipped
-  // (dead / wrong-box) roles leave no gaps.
+  // (absent / wrong-box) roles leave no gaps.
   let index = 0;
   for (const role of desiredOrder) {
     try {
@@ -66,6 +72,20 @@ function safelyReorder(box, desiredOrder) {
       journal(`safelyReorder: skipping role "${role}": ${e.message}`);
     }
   }
+}
+
+// Coalesced, delayed apply used by the child-added watcher.
+function scheduleApply(boxType) {
+  if (state.applyIds[boxType])
+    return;
+  state.applyIds[boxType] = GLib.timeout_add(GLib.PRIORITY_DEFAULT, APPLY_DELAY_MS, () => {
+    state.applyIds[boxType] = 0;
+    if (!state.settings)
+      return GLib.SOURCE_REMOVE;
+    applyOrder(boxType);
+    discoverAndPublish(boxType);
+    return GLib.SOURCE_REMOVE;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -125,18 +145,15 @@ function discoverAndPublish(boxType) {
 // Child watchers.
 //
 // set_child_at_index() repositions existing children and does NOT fire
-// child-added / child-removed, so re-applying the order from inside
-// child-added cannot loop.
+// child-added / child-removed, so re-applying the order after child-added
+// cannot loop.
 // ---------------------------------------------------------------------------
 
 function connectChildWatchers() {
   for (const [boxType, keys] of Object.entries(BOX_KEYS)) {
     const box = Panel[keys.box];
     if (!box) continue;
-    const addedId = box.connect('child-added', () => {
-      applyOrder(boxType);
-      discoverAndPublish(boxType);
-    });
+    const addedId = box.connect('child-added', () => scheduleApply(boxType));
     const removedId = box.connect('child-removed', () => discoverAndPublish(boxType));
     state.childSignalIds.push({ box, addedId, removedId });
   }
@@ -201,6 +218,12 @@ function teardown() {
   if (state.pollingTimeoutId) {
     GLib.Source.remove(state.pollingTimeoutId);
     state.pollingTimeoutId = 0;
+  }
+
+  for (const [boxType, id] of Object.entries(state.applyIds)) {
+    if (id)
+      GLib.Source.remove(id);
+    state.applyIds[boxType] = 0;
   }
 
   disconnectChildWatchers();

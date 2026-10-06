@@ -55,9 +55,9 @@ function loadCss() {
 
 // ==================== REORDERABLE ROLE LIST ====================
 // One drag-reorderable Gtk.ListBox bound to one box's order-*/discovered-*
-// keys. Only roles currently present in this box are shown. Roles that are
-// saved in order-* but not present (inactive extensions, other box) are kept
-// in settings so their position is remembered, but never displayed.
+// keys. Only roles currently present in this box are shown. Absent roles
+// (temporarily hidden indicators like network/VPN, or disabled extensions)
+// stay in order-* in their original slot, so they return to the right place.
 class ReorderableRoleList {
     constructor(settings, boxType, orderKey, discoveredKey) {
         this._settings = settings;
@@ -88,8 +88,13 @@ class ReorderableRoleList {
         this._rebuild(this._effectiveOrder());
     }
 
-    // Saved order restricted to roles present in THIS box right now,
-    // followed by any present roles that aren't in the saved order yet.
+    // The order as displayed: saved order restricted to roles present in
+    // THIS box right now, followed by present roles not saved yet.
+    shownOrder() {
+        return this._effectiveOrder();
+    }
+
+    // Saved roles that are present, plus new ones appended.
     _effectiveOrder() {
         const order = this._settings.get_strv(this._orderKey);
         const present = this._settings.get_strv(this._discoveredKey)
@@ -104,18 +109,36 @@ class ReorderableRoleList {
         return merged;
     }
 
-    // Write the shown order, keeping non-shown (inactive) saved roles after
-    // it so their slot is remembered. Never writes 'unknown' or duplicates,
-    // and skips the write entirely if nothing changed.
+    // Slot-preserving save: present roles fill the slots that present roles
+    // already occupy (in their new order); absent roles keep their exact
+    // slot. Skipped while discovered-* is empty (before the shell has
+    // published), so an unpublished snapshot never wipes the saved order.
     _persist(shown) {
-        const saved = this._settings.get_strv(this._orderKey);
-        const inactive = saved.filter((r, i) =>
-            r !== 'unknown' &&
-            !shown.includes(r) &&
-            saved.indexOf(r) === i);
-        const next = [...shown, ...inactive];
-        if (JSON.stringify(next) !== JSON.stringify(saved))
+        if (this._settings.get_strv(this._discoveredKey).length === 0)
+            return;
+
+        const raw = this._settings.get_strv(this._orderKey);
+        // De-duplicate so slot counting stays consistent.
+        const saved = raw.filter((r, i) => raw.indexOf(r) === i);
+
+        const queue = [...shown];
+        const next = [];
+        for (const role of saved)
+            next.push(shown.includes(role) ? queue.shift() : role);
+
+        // Present roles that had no saved slot yet go at the end.
+        next.push(...queue);
+
+        if (JSON.stringify(next) !== JSON.stringify(raw))
             this._settings.set_strv(this._orderKey, next);
+    }
+
+    // Drop absent roles from order-* so it mirrors exactly what is shown.
+    forgetInactive() {
+        const shown = this._effectiveOrder();
+        const saved = this._settings.get_strv(this._orderKey);
+        if (JSON.stringify(shown) !== JSON.stringify(saved))
+            this._settings.set_strv(this._orderKey, shown);
     }
 
     _rebuild(roles) {
@@ -246,6 +269,17 @@ class ReorderableRoleList {
 // Import / export.
 // ---------------------------------------------------------------------------
 
+// Export only roles that are currently present, so absent/disabled roles
+// don't leak into the file. Falls back to the saved order if the shell
+// hasn't published a snapshot yet.
+function exportOrderFor(orderKey, discoveredKey) {
+    const order = state.settings.get_strv(orderKey);
+    const present = new Set(state.settings.get_strv(discoveredKey));
+    if (present.size === 0)
+        return order;
+    return order.filter(r => present.has(r));
+}
+
 function onExportClicked(window) {
     const dialog = new Gtk.FileChooserNative({
         title: 'Export Panel Order',
@@ -266,9 +300,9 @@ function onExportClicked(window) {
             try {
                 const file = dialog.get_file();
                 const data = {
-                    left: state.settings.get_strv('order-left'),
-                    center: state.settings.get_strv('order-center'),
-                    right: state.settings.get_strv('order-right'),
+                    left: exportOrderFor('order-left', 'discovered-left'),
+                    center: exportOrderFor('order-center', 'discovered-center'),
+                    right: exportOrderFor('order-right', 'discovered-right'),
                 };
                 const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
                 file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
@@ -354,10 +388,10 @@ function buildPage(window) {
         page.add(group);
     }
 
-    // ---- Import / Export ----
+    // ---- Import / Export / Forget ----
     const ioGroup = new Adw.PreferencesGroup({
         title: 'Backup',
-        description: 'Save or load the order of all three boxes as a JSON file',
+        description: 'Save or load the order of all three boxes as a JSON file. "Forget inactive" removes saved positions of indicators that are not currently in the panel.',
     });
     page.add(ioGroup);
 
@@ -370,6 +404,16 @@ function buildPage(window) {
     const importBtn = new Gtk.Button({ label: 'Import…', valign: Gtk.Align.CENTER });
     importBtn.connect('clicked', () => onImportClicked(window));
     ioRow.add_suffix(importBtn);
+
+    const cleanBtn = new Gtk.Button({ label: 'Forget inactive', valign: Gtk.Align.CENTER });
+    cleanBtn.connect('clicked', () => {
+        // Don't wipe everything if the shell hasn't published yet.
+        if (!state.lists.some(l => l.shownOrder().length > 0))
+            return;
+        for (const list of state.lists)
+            list.forgetInactive();
+    });
+    ioRow.add_suffix(cleanBtn);
 
     ioGroup.add(ioRow);
 
