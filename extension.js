@@ -17,11 +17,6 @@ const BOX_KEYS = {
 
 // ---------------------------------------------------------------------------
 // Module state.
-//
-// Everything the extension tracks at runtime lives here, not on the Extension
-// instance. The logic below is plain functions reading and writing this
-// object, so there is exactly one place to look for "what state does this
-// extension keep".
 // ---------------------------------------------------------------------------
 const state = {
   settings: null,
@@ -57,21 +52,20 @@ function applyOrder(boxType) {
 }
 
 function safelyReorder(box, desiredOrder) {
-  desiredOrder.forEach((role, index) => {
+  // Only roles that are actually placed advance the index. Skipped
+  // (dead / wrong-box) roles must not leave gaps.
+  let index = 0;
+  for (const role of desiredOrder) {
     try {
-      const indicator = Panel.statusArea[role];
-      if (!indicator || !indicator.container)
-        return;
-      const actor = indicator.container;
-      if (actor.get_parent() === box)
-        box.set_child_at_index(actor, index);
+      const actor = Panel.statusArea[role]?.container;
+      if (!actor || actor.get_parent() !== box)
+        continue;
+      box.set_child_at_index(actor, index++);
     } catch (e) {
-      // Indicator's actor may have been disposed between the null-check
-      // above and here (e.g. its extension was disabled mid-reorder).
-      // Skip it — one broken role shouldn't stop the rest from applying.
+      // Indicator's actor may have been disposed mid-reorder.
       journal(`safelyReorder: skipping role "${role}": ${e.message}`);
     }
-  });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +82,7 @@ function getRolesInBox(box) {
     return roles;
   }
 
-  children.forEach(child => {
+  for (const child of children) {
     let role = null;
     try {
       for (const r in StatusArea) {
@@ -98,11 +92,13 @@ function getRolesInBox(box) {
         }
       }
     } catch (e) {
-      // A StatusArea entry mid-teardown can throw on property access —
-      // treat it the same as "couldn't identify this child".
+      // A StatusArea entry mid-teardown can throw; treat as unidentified.
     }
-    roles.push(role || 'unknown');
-  });
+    // Children that aren't statusArea indicators (spacers, etc.) are
+    // not reorderable by role, so don't publish them.
+    if (role && !roles.includes(role))
+      roles.push(role);
+  }
 
   return roles;
 }
@@ -118,8 +114,7 @@ function discoverAndPublish(boxType) {
   if (!box) return;
   const roles = getRolesInBox(box);
 
-  // Skip redundant writes (and the spurious 'changed' signal that would
-  // come with them) when nothing actually changed.
+  // Skip redundant writes (and the spurious 'changed' signal).
   const current = state.settings.get_strv(keys.discovered);
   if (current.length === roles.length && current.every((r, i) => r === roles[i]))
     return;
@@ -128,13 +123,6 @@ function discoverAndPublish(boxType) {
 
 // ---------------------------------------------------------------------------
 // Child watchers.
-//
-// Keeps discovered-* live as other extensions' indicators load in, get
-// removed, or (rarely) move — without this, prefs would only ever see a
-// one-time snapshot from startup. set_child_at_index() (used by
-// safelyReorder above) repositions existing children and does NOT fire
-// child-added/child-removed, so our own reordering never triggers a
-// spurious rediscovery here.
 // ---------------------------------------------------------------------------
 
 function connectChildWatchers() {
@@ -160,9 +148,14 @@ function disconnectChildWatchers() {
 // ---------------------------------------------------------------------------
 
 function setup() {
-  // Poll until every role we're actually asked to place shows up (or we
-  // give up after 40 attempts) — driven by whatever the person has saved
-  // in order-* now instead of a fixed list of roles.
+  // Clear any stale snapshot left over from a previous session or crash,
+  // so prefs never shows roles that aren't there. Fresh data is published
+  // once the panel settles.
+  for (const keys of Object.values(BOX_KEYS)) {
+    if (state.settings.get_strv(keys.discovered).length > 0)
+      state.settings.set_strv(keys.discovered, []);
+  }
+
   let attempts = 0;
   let pending = [
     ...state.settings.get_strv('order-left'),
@@ -173,6 +166,7 @@ function setup() {
   state.pollingTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
     attempts++;
 
+    // Keep only roles that have NOT shown up yet.
     pending = pending.filter(role => {
       const obj = StatusArea[role];
       return !obj || !obj.container;
@@ -190,9 +184,7 @@ function setup() {
     return GLib.SOURCE_CONTINUE;
   });
 
-  // Live sync: when prefs writes a new order-* value, dconf fires
-  // 'changed' in THIS process too (it's cross-process), so the panel
-  // updates immediately with no shell reload.
+  // Live sync when prefs writes a new order-* value.
   for (const [boxType, keys] of Object.entries(BOX_KEYS)) {
     const id = state.settings.connect(`changed::${keys.order}`, () => applyOrder(boxType));
     state.settingsChangeIds.push(id);
@@ -214,10 +206,6 @@ function teardown() {
 
 // ---------------------------------------------------------------------------
 // Extension entry point.
-//
-// This class exists only because GNOME Shell requires an Extension subclass
-// and because enable/disable hooks and the settings object come from it. All
-// the real work is done by the module-level functions above.
 // ---------------------------------------------------------------------------
 
 export default class FixPanelOrderExtension extends Extension {

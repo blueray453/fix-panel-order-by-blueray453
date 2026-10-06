@@ -12,20 +12,14 @@ const BOXES = [
 ];
 
 // ---------------------------------------------------------------------------
-// Module state.
-//
-// The prefs window can be built more than once per process (open, close,
-// reopen), so this is reset at the start of every fillPreferencesWindow().
+// Module state. Reset on every fillPreferencesWindow().
 // ---------------------------------------------------------------------------
 const state = {
     settings: null,
-    lists: [],           // ReorderableRoleList instances, one per box
-    // Set on drag-begin, cleared on drag-end. Every row's Gtk.DropTarget
-    // reads this during 'motion' to decide, synchronously, whether it
-    // belongs to the same box as the drag source — GTK's own value-based
-    // drop payload isn't available until 'drop' fires, but we need same-box
-    // awareness *during* the drag to draw (or withhold) the insertion-line
-    // indicator and show the correct pointer cursor.
+    lists: [],
+    // Set on drag-begin, cleared on drag-end. Lets every row's DropTarget
+    // know synchronously, during 'motion', whether the drag belongs to the
+    // same box.
     currentDrag: null,   // { boxType, role, sourceList }
 };
 
@@ -61,15 +55,9 @@ function loadCss() {
 
 // ==================== REORDERABLE ROLE LIST ====================
 // One drag-reorderable Gtk.ListBox bound to one box's order-*/discovered-*
-// GSettings keys. Drops are scoped to their own box two ways: the JSON
-// payload is checked at 'drop' (belt), and the currentDrag boxType is
-// checked at 'motion' so the wrong-box case never even shows an insertion
-// indicator or accepts the drag visually (suspenders).
-//
-// This stays a class: it has real per-instance lifecycle (multiple lists
-// coexist, one per box), owns a GSettings signal that needs disconnecting,
-// and is tightly bound to the Gtk.ListBox widget it creates. This is the
-// "OOP strictly needed" case.
+// keys. Only roles currently present in this box are shown. Roles that are
+// saved in order-* but not present (inactive extensions, other box) are kept
+// in settings so their position is remembered, but never displayed.
 class ReorderableRoleList {
     constructor(settings, boxType, orderKey, discoveredKey) {
         this._settings = settings;
@@ -84,7 +72,7 @@ class ReorderableRoleList {
         });
 
         this._discoveredChangedId = settings.connect(
-            `changed::${discoveredKey}`, () => this._mergeNewlyDiscovered());
+            `changed::${discoveredKey}`, () => this.refresh());
 
         this.refresh();
     }
@@ -100,19 +88,34 @@ class ReorderableRoleList {
         this._rebuild(this._effectiveOrder());
     }
 
+    // Saved order restricted to roles present in THIS box right now,
+    // followed by any present roles that aren't in the saved order yet.
     _effectiveOrder() {
         const order = this._settings.get_strv(this._orderKey);
-        const discovered = this._settings.get_strv(this._discoveredKey);
-        const merged = [...order];
-        for (const role of discovered) {
+        const present = this._settings.get_strv(this._discoveredKey)
+            .filter(r => r !== 'unknown');
+
+        const merged = order.filter((r, i) =>
+            present.includes(r) && order.indexOf(r) === i);
+        for (const role of present) {
             if (!merged.includes(role))
                 merged.push(role);
         }
         return merged;
     }
 
-    _persist(order) {
-        this._settings.set_strv(this._orderKey, order);
+    // Write the shown order, keeping non-shown (inactive) saved roles after
+    // it so their slot is remembered. Never writes 'unknown' or duplicates,
+    // and skips the write entirely if nothing changed.
+    _persist(shown) {
+        const saved = this._settings.get_strv(this._orderKey);
+        const inactive = saved.filter((r, i) =>
+            r !== 'unknown' &&
+            !shown.includes(r) &&
+            saved.indexOf(r) === i);
+        const next = [...shown, ...inactive];
+        if (JSON.stringify(next) !== JSON.stringify(saved))
+            this._settings.set_strv(this._orderKey, next);
     }
 
     _rebuild(roles) {
@@ -128,8 +131,7 @@ class ReorderableRoleList {
             const empty = new Adw.ActionRow({ title: 'No indicators found here', sensitive: false });
             this.widget.append(empty);
         } else {
-            const discovered = new Set(this._settings.get_strv(this._discoveredKey));
-            roles.forEach(role => this._addRow(role, discovered.has(role)));
+            roles.forEach(role => this._addRow(role));
         }
 
         this._persist(roles);
@@ -151,15 +153,10 @@ class ReorderableRoleList {
         this._highlightedRow = row;
     }
 
-    _addRow(role, isPresent) {
+    _addRow(role) {
         const row = new Adw.ActionRow({ title: role });
         row._role = role;
         row.add_prefix(new Gtk.Image({ icon_name: 'list-drag-handle-symbolic' }));
-
-        if (!isPresent) {
-            row.set_subtitle('Not currently active');
-            row.add_css_class('dim-label');
-        }
 
         // ---- Drag source ----
         const dragSource = new Gtk.DragSource({ actions: Gdk.DragAction.MOVE });
@@ -174,8 +171,6 @@ class ReorderableRoleList {
             state.currentDrag = { boxType: this._boxType, role: row._role, sourceList: this };
             row.add_css_class('dragging');
 
-            // Row itself, semi-transparent, follows the pointer — makes it
-            // unambiguous which indicator is actually being moved.
             const paintable = new Gtk.WidgetPaintable({ widget: row });
             source.set_icon(paintable, row.get_width() / 2, row.get_height() / 2);
         });
@@ -190,18 +185,16 @@ class ReorderableRoleList {
         const dropTarget = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE);
 
         dropTarget.connect('motion', (target, x, y) => {
-            // Wrong box (or no drag in progress, e.g. a drag from outside
-            // this prefs window entirely) — no indicator, reject visually.
             if (!state.currentDrag || state.currentDrag.boxType !== this._boxType) {
                 this._clearHighlight();
-                return 0; // Gdk.DragAction none -> "no drop" cursor here
+                return 0;
             }
             if (state.currentDrag.role === row._role) {
                 this._clearHighlight();
                 return 0;
             }
 
-            const before = y < row.get_allocated_height() / 2;
+            const before = y < row.get_height() / 2;
             this._setHighlight(row, before);
             return Gdk.DragAction.MOVE;
         });
@@ -227,7 +220,7 @@ class ReorderableRoleList {
             if (payload.role === row._role)
                 return false;
 
-            const insertAfter = y > row.get_allocated_height() / 2;
+            const insertAfter = y > row.get_height() / 2;
             this._moveRole(payload.role, row._role, insertAfter);
             return true;
         });
@@ -246,17 +239,6 @@ class ReorderableRoleList {
             idx += 1;
         order.splice(idx, 0, draggedRole);
         this._rebuild(order);
-    }
-
-    _mergeNewlyDiscovered() {
-        const discovered = this._settings.get_strv(this._discoveredKey);
-        const order = this._settings.get_strv(this._orderKey);
-        const newRoles = discovered.filter(r => !order.includes(r));
-        if (newRoles.length === 0) {
-            this._rebuild(this._effectiveOrder());
-            return;
-        }
-        this._rebuild([...order, ...newRoles]);
     }
 }
 
@@ -320,8 +302,9 @@ function onImportClicked(window) {
                 const [, contents] = file.load_contents(null);
                 const data = JSON.parse(new TextDecoder().decode(contents));
 
-                if (!Array.isArray(data.left) || !Array.isArray(data.center) || !Array.isArray(data.right))
-                    throw new Error('Expected a JSON object with "left", "center", "right" arrays');
+                const valid = a => Array.isArray(a) && a.every(r => typeof r === 'string');
+                if (!valid(data.left) || !valid(data.center) || !valid(data.right))
+                    throw new Error('Expected a JSON object with "left", "center", "right" arrays of strings');
 
                 state.settings.set_strv('order-left', data.left);
                 state.settings.set_strv('order-center', data.center);
@@ -401,10 +384,6 @@ function buildPage(window) {
 
 // ---------------------------------------------------------------------------
 // Preferences entry point.
-//
-// This class exists only because GNOME Shell requires an ExtensionPreferences
-// subclass and because getSettings() is only reachable from it. All the real
-// work is done by the module-level functions above.
 // ---------------------------------------------------------------------------
 
 export default class FixPanelOrderPreferences extends ExtensionPreferences {
