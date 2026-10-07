@@ -1,48 +1,101 @@
+/* Solarized Dark palette
+   base03 #002b36  base02 #073642  base01 #586e75
+   base0  #839496  base1  #93a1a1  base2  #eee8d5
+   blue   #268bd2  cyan   #2aa198  yellow #b58900 */
+
 #panel {
-  height: 120px;
-  background-color: #000000;
-  font-size: 32px;
+  height: 128px;
+  font-size: 36px;
+  font-weight: bold;
+  color: #93a1a1;
+  background-color: rgba(0, 43, 54, 0.75);
+  border-top: 2px solid rgba(88, 110, 117, 0.5);
+  box-shadow: none;
+}
+
+#panel .panel-button {
+  color: #93a1a1;
+  font-size: 36px;
+  border-radius: 18px;
+  margin: 12px 5px;
+  padding: 0 20px;
+  transition-duration: 150ms;
+}
+
+#panel .panel-button:hover {
+  background-color: rgba(7, 54, 66, 0.9);
+  color: #eee8d5;
+}
+
+#panel .panel-button:active,
+#panel .panel-button:focus,
+#panel .panel-button:checked {
+  background-color: #268bd2;
+  color: #002b36;
 }
 
 #panel .clock-display-box .clock {
   margin: 0 !important;
   padding: 0 !important;
-  /* border: 1px solid green; */
+  font-size: 36px;
 }
 
-#panel .panel-button .system-status-icon {
-    icon-size: 32px; /* Explicitly forces status icon sizing */
+/* Icons */
+#panel .panel-button .system-status-icon,
+#panel .panel-button .app-menu-icon,
+#panel .panel-button StIcon {
+  icon-size: 40px;
 }
 
 #panel .messages-indicator {
-    opacity: 0 !important;
-    width: 0 !important;
-    height: 0 !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
+/* Popup menus */
 .popup-menu.panel-menu {
-    margin-bottom: 0;
+  margin-bottom: 0;
 }
 
 .popup-menu-content {
-    font-size: 32px; /* Increase overall menu font size */
+  font-size: 36px;
+  background-color: #073642;
+  border: 1px solid #586e75;
+  border-radius: 18px;
+  color: #93a1a1;
 }
 
 .popup-menu-item {
-    font-size: 32px; /* Individual item font size */
-    min-height: 64px; /* Adjust height for larger text */
-    margin: 0px;
-    padding: 0px;
-    min-height: 40px !important;
+  font-size: 36px;
+  margin: 0;
+  padding: 0 14px;
+  min-height: 52px !important;
+  border-radius: 12px;
+}
+
+.popup-menu-item:hover,
+.popup-menu-item:focus {
+  background-color: #002b36;
+  color: #eee8d5;
+}
+
+.popup-menu-item:active {
+  background-color: #268bd2;
+  color: #002b36;
 }
 
 .popup-menu-item StLabel {
-    font-size: 32px; /* Target labels specifically */
-    margin: 0px;
-    padding: 0px;
-    min-height: 40px !important;
+  font-size: 36px;
+  margin: 0;
+  padding: 0;
+}
+
+.popup-menu-item StIcon,
+.popup-menu .popup-menu-icon {
+  icon-size: 40px;
 }
 
 .popup-sub-menu .popup-menu-item {
-    font-size: 32px; /* Submenu items */
+  font-size: 36px;
 }
