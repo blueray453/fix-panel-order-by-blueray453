@@ -3,8 +3,12 @@ import GLib from 'gi://GLib';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const BOXES = ['left', 'center', 'right'];
+const BOXES = ['left', 'center', 'right']; // also the keys of Main.sessionMode.panel
 const DELAY_MS = 100; // let other extensions finish positioning first
+
+// Roles removed from the panel layout. They stay (hidden) in their box,
+// so _sync() must not publish them to prefs.
+const HIDDEN_ROLES = new Set(['activities']);
 
 export default class FixPanelOrderExtension extends Extension {
   enable() {
@@ -20,9 +24,11 @@ export default class FixPanelOrderExtension extends Extension {
     // Move panel to bottom
     this._movePanelPosition(true);
 
-    // Rearrange indicators (Activities is removed from the layout entirely;
-    // _updatePanel() keeps indicators that are not listed hidden).
-    this._moveIndicators(true);
+    // Session-mode layout edits: back up once, apply each change, rebuild once.
+    this._backupLayout();
+    this._hideActivities();
+    this._moveDateMenuToRight();
+    Main.panel._updatePanel();
 
     // Stop the panel from starting a window-move grab on press.
     this._disablePanelWindowDrag(true);
@@ -55,8 +61,9 @@ export default class FixPanelOrderExtension extends Extension {
     // Move panel back to top
     this._movePanelPosition(false);
 
-    // Restore the stock panel layout; _updatePanel() shows Activities again.
-    this._moveIndicators(false);
+    // Restore the stock layout; _updatePanel() shows Activities and
+    // puts the date menu back in the center.
+    this._restoreLayout();
 
     this._disablePanelWindowDrag(false);
   }
@@ -137,38 +144,51 @@ export default class FixPanelOrderExtension extends Extension {
   }
 
   // ---------------------------------------------------------------------
-  // Activities / date placement
+  // Session-mode panel layout
   //
-  // Panel._updatePanel() hides every indicator container and then shows
-  // only those listed in the session mode layout, so removing 'activities'
-  // from the layout is enough to keep it hidden. Restoring the layout
-  // brings it back.
+  // Panel._updatePanel() rebuilds the panel from Main.sessionMode.panel:
+  // it hides every indicator, then shows and places only those listed in
+  // the layout. Editing the layout is therefore the one change that
+  // survives lock/unlock and other _updatePanel() calls.
+  //
+  // The edits below share one backup, since they modify the same arrays
+  // and can't be undone independently.
   // ---------------------------------------------------------------------
-  _moveIndicators(active) {
-    if (active) {
-      if (this._modePanel) return;
+  _backupLayout() {
+    if (this._modePanel) return;
 
-      // Keep a reference to the exact object we modify, so disable() restores
-      // it even if the session mode has changed in the meantime.
-      const panel = Main.sessionMode.panel;
-      this._modePanel = panel;
-      this._origPanelLayout = {
-        left: [...panel.left],
-        center: [...panel.center],
-        right: [...panel.right],
-      };
+    // Keep a reference to the exact object we modify, so it is restored
+    // even if the session mode has changed in the meantime.
+    const panel = Main.sessionMode.panel;
+    this._modePanel = panel;
+    this._origPanelLayout = {
+      left: [...panel.left],
+      center: [...panel.center],
+      right: [...panel.right],
+    };
+  }
 
-      const drop = new Set(['activities', 'dateMenu']);
-      panel.left = panel.left.filter(i => !drop.has(i));
-      panel.center = panel.center.filter(i => !drop.has(i));
-      panel.right = ['dateMenu', ...panel.right.filter(i => !drop.has(i))];
-    } else if (this._modePanel) {
-      Object.assign(this._modePanel, this._origPanelLayout);
-      this._modePanel = null;
-      this._origPanelLayout = null;
-    }
-
+  _restoreLayout() {
+    if (!this._modePanel) return;
+    Object.assign(this._modePanel, this._origPanelLayout);
+    this._modePanel = null;
+    this._origPanelLayout = null;
     Main.panel._updatePanel();
+  }
+
+  // Remove Activities (and any other HIDDEN_ROLES) from the layout.
+  _hideActivities() {
+    const panel = this._modePanel;
+    for (const box of BOXES)
+      panel[box] = panel[box].filter(role => !HIDDEN_ROLES.has(role));
+  }
+
+  // Remove the date menu from wherever it is and put it first in the right box.
+  _moveDateMenuToRight() {
+    const panel = this._modePanel;
+    for (const box of BOXES)
+      panel[box] = panel[box].filter(role => role !== 'dateMenu');
+    panel.right = ['dateMenu', ...panel.right];
   }
 
   // ---------------------------------------------------------------------
@@ -207,7 +227,12 @@ export default class FixPanelOrderExtension extends Extension {
   // set_child_at_index() doesn't emit child-added/removed, so no loop.
   _sync() {
     const area = Main.panel.statusArea;
-    const roleOf = new Map(Object.entries(area).map(([role, ind]) => [ind?.container, role]));
+    // Hidden roles are skipped, so roleOf has no entry for them and the
+    // .filter(Boolean) below drops them from the published list.
+    const roleOf = new Map(
+      Object.entries(area)
+        .filter(([role]) => !HIDDEN_ROLES.has(role))
+        .map(([role, ind]) => [ind?.container, role]));
 
     for (const type of BOXES) {
       const box = Main.panel[`_${type}Box`];
