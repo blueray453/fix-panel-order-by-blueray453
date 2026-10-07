@@ -35,11 +35,11 @@
   color: #002b36;
 }
 
-#panel .clock-display-box .clock {
+/* #panel .clock-display-box .clock {
   margin: 0 !important;
   padding: 0 !important;
   font-size: 36px;
-}
+} */
 
 /* Icons */
 #panel .panel-button .system-status-icon,
