@@ -1,0 +1,48 @@
+#panel {
+  height: 120px;
+  background-color: #000000;
+  font-size: 32px;
+}
+
+#panel .clock-display-box .clock {
+  margin: 0 !important;
+  padding: 0 !important;
+  /* border: 1px solid green; */
+}
+
+#panel .panel-button .system-status-icon {
+    icon-size: 32px; /* Explicitly forces status icon sizing */
+}
+
+#panel .messages-indicator {
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+
+.popup-menu.panel-menu {
+    margin-bottom: 0;
+}
+
+.popup-menu-content {
+    font-size: 32px; /* Increase overall menu font size */
+}
+
+.popup-menu-item {
+    font-size: 32px; /* Individual item font size */
+    min-height: 64px; /* Adjust height for larger text */
+    margin: 0px;
+    padding: 0px;
+    min-height: 40px !important;
+}
+
+.popup-menu-item StLabel {
+    font-size: 32px; /* Target labels specifically */
+    margin: 0px;
+    padding: 0px;
+    min-height: 40px !important;
+}
+
+.popup-sub-menu .popup-menu-item {
+    font-size: 32px; /* Submenu items */
+}
