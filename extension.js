@@ -3,6 +3,13 @@ import GLib from 'gi://GLib';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import {
+  initLogging,
+  createLogger,
+} from './logger.js';
+
+const journal = createLogger(import.meta.url);
+
 const BOXES = ['left', 'center', 'right']; // also the keys of Main.sessionMode.panel
 const DELAY_MS = 100; // let other extensions finish positioning first
 
@@ -12,6 +19,9 @@ const HIDDEN_ROLES = new Set(['activities']);
 
 export default class FixPanelOrderExtension extends Extension {
   enable() {
+    initLogging(this.uuid, 'both', false);
+    journal(`Enabled`);
+
     this._settings = this.getSettings();
     this._timeoutId = 0;
     this._signals = [];
