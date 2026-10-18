@@ -43,9 +43,9 @@ export default class FixPanelOrderExtension extends Extension {
     // Stop the panel from starting a window-move grab on press.
     this._disablePanelWindowDrag(true);
 
-    // Scroll on panel to change workspace (wraps around at the ends)
-    Main.panel.connectObject('scroll-event',
-      (_actor, event) => this._handleScroll(event), this);
+    // // Scroll on panel to change workspace (wraps around at the ends)
+    // Main.panel.connectObject('scroll-event',
+    //   (_actor, event) => this._handleScroll(event), this);
 
     for (const type of BOXES) {
       const box = Main.panel[`_${type}Box`];
