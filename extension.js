@@ -17,6 +17,8 @@ const DELAY_MS = 100; // let other extensions finish positioning first
 // so _sync() must not publish them to prefs.
 const HIDDEN_ROLES = new Set(['activities']);
 
+const DATE_MENU = 'dateMenu';
+
 export default class FixPanelOrderExtension extends Extension {
   enable() {
     initLogging(this.uuid, 'both', false);
@@ -30,18 +32,20 @@ export default class FixPanelOrderExtension extends Extension {
     this._origPanelLayout = null;
     this._origFindDraggable = null;
     this._lastWrapTime = 0;
+    this._panelMoved = false;
 
-    // Move panel to bottom
-    this._movePanelPosition(true);
+    // Move panel to bottom (if enabled)
+    this._panelMoved = this._settings.get_boolean('move-panel-to-bottom');
+    if (this._panelMoved)
+      this._movePanelPosition(true);
 
-    // Session-mode layout edits: back up once, apply each change, rebuild once.
+    // Session-mode layout edits: back up once, apply per settings.
     this._backupLayout();
-    this._hideActivities();
-    this._moveDateMenuToRight();
-    Main.panel._updatePanel();
+    this._applyLayout();
 
-    // Stop the panel from starting a window-move grab on press.
-    this._disablePanelWindowDrag(true);
+    // Stop the panel from starting a window-move grab on press (if enabled).
+    this._disablePanelWindowDrag(
+      this._settings.get_boolean('disable-panel-window-drag'));
 
     // // Scroll on panel to change workspace (wraps around at the ends)
     // Main.panel.connectObject('scroll-event',
@@ -54,6 +58,22 @@ export default class FixPanelOrderExtension extends Extension {
       this._signals.push([this._settings,
       this._settings.connect(`changed::order-${type}`, () => this._sync())]);
     }
+
+    // Behaviour keys — applied live.
+    this._signals.push([this._settings,
+    this._settings.connect('changed::move-panel-to-bottom',
+      () => this._onPanelPositionChanged())]);
+    this._signals.push([this._settings,
+    this._settings.connect('changed::hide-activities',
+      () => this._applyLayout())]);
+    this._signals.push([this._settings,
+    this._settings.connect('changed::date-menu-position',
+      () => this._applyLayout())]);
+    this._signals.push([this._settings,
+    this._settings.connect('changed::disable-panel-window-drag',
+      () => this._disablePanelWindowDrag(
+        this._settings.get_boolean('disable-panel-window-drag')))]);
+
     this._schedule();
   }
 
@@ -69,10 +89,13 @@ export default class FixPanelOrderExtension extends Extension {
     Main.panel.disconnectObject(this);
 
     // Move panel back to top
-    this._movePanelPosition(false);
+    if (this._panelMoved) {
+      this._movePanelPosition(false);
+      this._panelMoved = false;
+    }
 
     // Restore the stock layout; _updatePanel() shows Activities and
-    // puts the date menu back in the center.
+    // puts the date menu back where the shell had it.
     this._restoreLayout();
 
     this._disablePanelWindowDrag(false);
@@ -153,6 +176,13 @@ export default class FixPanelOrderExtension extends Extension {
     }
   }
 
+  _onPanelPositionChanged() {
+    const shouldBeBottom = this._settings.get_boolean('move-panel-to-bottom');
+    if (shouldBeBottom === this._panelMoved) return;
+    this._movePanelPosition(shouldBeBottom);
+    this._panelMoved = shouldBeBottom;
+  }
+
   // ---------------------------------------------------------------------
   // Session-mode panel layout
   //
@@ -186,6 +216,24 @@ export default class FixPanelOrderExtension extends Extension {
     Main.panel._updatePanel();
   }
 
+  // Reset to the stock layout and re-apply the current behaviour settings.
+  // Idempotent: called both at enable-time and whenever hide-activities or
+  // date-menu-position changes.
+  _applyLayout() {
+    if (!this._modePanel) return;
+
+    // Reset from the snapshot so re-application is safe.
+    this._modePanel.left = [...this._origPanelLayout.left];
+    this._modePanel.center = [...this._origPanelLayout.center];
+    this._modePanel.right = [...this._origPanelLayout.right];
+
+    if (this._settings.get_boolean('hide-activities'))
+      this._hideActivities();
+    this._applyDateMenuPosition();
+
+    Main.panel._updatePanel();
+  }
+
   // Remove Activities (and any other HIDDEN_ROLES) from the layout.
   _hideActivities() {
     const panel = this._modePanel;
@@ -193,12 +241,18 @@ export default class FixPanelOrderExtension extends Extension {
       panel[box] = panel[box].filter(role => !HIDDEN_ROLES.has(role));
   }
 
-  // Remove the date menu from wherever it is and put it first in the right box.
-  _moveDateMenuToRight() {
+  // Move the date menu to the position chosen in settings (no-op on 'stock').
+  _applyDateMenuPosition() {
+    const choice = this._settings.get_string('date-menu-position');
+    if (choice === 'stock') return;
+
     const panel = this._modePanel;
     for (const box of BOXES)
-      panel[box] = panel[box].filter(role => role !== 'dateMenu');
-    panel.right = ['dateMenu', ...panel.right];
+      panel[box] = panel[box].filter(role => role !== DATE_MENU);
+
+    if (choice === 'left-first') panel.left = [DATE_MENU, ...panel.left];
+    else if (choice === 'center-first') panel.center = [DATE_MENU, ...panel.center];
+    else if (choice === 'right-first') panel.right = [DATE_MENU, ...panel.right];
   }
 
   // ---------------------------------------------------------------------

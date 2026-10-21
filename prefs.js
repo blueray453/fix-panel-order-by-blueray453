@@ -1,3 +1,4 @@
+import Gio from 'gi://Gio';
 import Gdk from 'gi://Gdk';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
@@ -5,6 +6,14 @@ import Adw from 'gi://Adw';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const BOXES = [['left', 'Left Box'], ['center', 'Center Box'], ['right', 'Right Box']];
+
+const DATE_CHOICES = ['stock', 'left-first', 'center-first', 'right-first'];
+const DATE_LABELS = [
+    'Stock (shell default)',
+    'Left box, first',
+    'Center box, first',
+    'Right box, first',
+];
 
 export default class FixPanelOrderPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
@@ -24,6 +33,35 @@ export default class FixPanelOrderPreferences extends ExtensionPreferences {
         let dragged = null; // {type, role}; lets each list reject drags from other boxes
         const cleanups = [];
 
+        // ---------- Behaviour ----------
+        const behaviour = new Adw.PreferencesGroup({
+            title: 'Behaviour',
+            description: 'Applied immediately — no restart needed.',
+        });
+        page.add(behaviour);
+
+        behaviour.add(this._booleanRow(settings,
+            'move-panel-to-bottom',
+            'Move panel to bottom',
+            'Move the top bar to the bottom of the screen. Ordering still applies.'));
+
+        behaviour.add(this._booleanRow(settings,
+            'hide-activities',
+            'Hide Activities button',
+            'Remove Activities from the panel layout.'));
+
+        behaviour.add(this._booleanRow(settings,
+            'disable-panel-window-drag',
+            'Disable panel window drag',
+            'Stop pressing the panel from starting a drag on the maximized window behind it.'));
+
+        behaviour.add(this._comboRow(settings,
+            'date-menu-position',
+            'Date menu position',
+            'Where to move the date/clock menu.',
+            DATE_CHOICES, DATE_LABELS, cleanups));
+
+        // ---------- Per-box ordering ----------
         for (const [type, title] of BOXES) {
             const orderKey = `order-${type}`;
             const discKey = `discovered-${type}`;
@@ -142,9 +180,60 @@ export default class FixPanelOrderPreferences extends ExtensionPreferences {
             rebuild();
         }
 
+        // ---------- Reset ----------
+        const miscGroup = new Adw.PreferencesGroup();
+        page.add(miscGroup);
+
+        const resetRow = new Adw.ActionRow({
+            title: 'Reset orders to defaults',
+            subtitle: 'Behaviour toggles above are not affected.',
+        });
+        const resetBtn = new Gtk.Button({
+            label: 'Reset',
+            css_classes: ['destructive-action'],
+        });
+        resetBtn.connect('clicked', () => {
+            for (const [type] of BOXES) settings.reset(`order-${type}`);
+        });
+        resetRow.add_suffix(resetBtn);
+        resetRow.set_activatable_widget(resetBtn);
+        miscGroup.add(resetRow);
+
         window.connect('close-request', () => {
             cleanups.forEach(fn => fn());
             return false;
         });
+    }
+
+    // ---------- helpers ----------
+    _booleanRow(settings, key, title, subtitle) {
+        const row = new Adw.ActionRow({ title, subtitle });
+        const toggle = new Gtk.Switch({ valign: Gtk.Align.CENTER });
+        settings.bind(key, toggle, 'active', Gio.SettingsBindFlags.DEFAULT);
+        row.add_suffix(toggle);
+        row.set_activatable_widget(toggle);
+        return row;
+    }
+
+    _comboRow(settings, key, title, subtitle, choices, labels, cleanups) {
+        const row = new Adw.ComboRow({
+            title, subtitle,
+            model: new Gtk.StringList({ strings: labels }),
+        });
+
+        const sync = () => {
+            const v = settings.get_string(key);
+            const i = choices.indexOf(v);
+            if (i >= 0 && row.selected !== i) row.selected = i;
+        };
+        row.connect('notify::selected', () => {
+            const v = choices[row.selected];
+            if (v && settings.get_string(key) !== v) settings.set_string(key, v);
+        });
+
+        const id = settings.connect(`changed::${key}`, sync);
+        cleanups.push(() => settings.disconnect(id));
+        sync();
+        return row;
     }
 }

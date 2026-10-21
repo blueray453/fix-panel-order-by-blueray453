@@ -35,5 +35,33 @@
       <summary>Roles currently present in the right panel box</summary>
     </key>
 
+    <!-- Behaviour toggles -->
+    <key name="move-panel-to-bottom" type="b">
+      <default>true</default>
+      <summary>Move the top bar to the bottom of the screen</summary>
+      <description>When off, the panel stays where the shell placed it. Ordering still applies.</description>
+    </key>
+    <key name="hide-activities" type="b">
+      <default>true</default>
+      <summary>Hide the Activities button</summary>
+      <description>Remove Activities from the panel layout.</description>
+    </key>
+    <key name="disable-panel-window-drag" type="b">
+      <default>true</default>
+      <summary>Stop pressing the panel from starting a window drag</summary>
+      <description>When off, restore the stock shell behaviour: press on the panel with a maximized window behind it and the window is grabbed.</description>
+    </key>
+    <key name="date-menu-position" type="s">
+      <choices>
+        <choice value="stock"/>
+        <choice value="left-first"/>
+        <choice value="center-first"/>
+        <choice value="right-first"/>
+      </choices>
+      <default>'right-first'</default>
+      <summary>Where to move the date/clock menu</summary>
+      <description>stock: leave it in the shell's default position. *-first: remove it from every box and put it first in that box.</description>
+    </key>
+
   </schema>
 </schemalist>
